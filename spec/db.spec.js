@@ -2,6 +2,7 @@ import chai, { expect } from 'chai';
 import chaiAsPromised from 'chai-as-promised';
 import { db } from '../src';
 import config from './databases/config';
+import setupSQLite from './databases/sqlite/setup';
 import setupCassandra from './databases/cassandra/setup';
 
 chai.use(chaiAsPromised);
@@ -15,6 +16,7 @@ const SUPPORTED_DB_CLIENTS = [
   'mysql',
   'postgresql',
   'sqlserver',
+  'sqlite',
   'cassandra',
 ];
 
@@ -31,7 +33,9 @@ describe('db', () => {
     throw new Error('Invalid selected db client for tests');
   }
 
-  if (~dbClients.indexOf('cassandra')) {
+  if (~dbClients.indexOf('sqlite')) {
+    setupSQLite(config.sqlite);
+  } else if (~dbClients.indexOf('cassandra')) {
     setupCassandra(config.cassandra);
   }
 
@@ -90,7 +94,11 @@ describe('db', () => {
         describe('.listDatabases', () => {
           it('should list all databases', async () => {
             const databases = await dbConn.listDatabases();
-            expect(databases).to.include.members(['sqlectron']);
+            if (dbClient === 'sqlite') {
+              expect(databases).to.include.members(['/tmp/sqlectron.db']);
+            } else {
+              expect(databases).to.include.members(['sqlectron']);
+            }
           });
         });
 
@@ -110,25 +118,27 @@ describe('db', () => {
           });
         }
 
-        if (dbClient !== 'cassandra') {
-          describe('.listRoutines', () => {
-            it('should list all routines with their type', async() => {
-              const routines = await dbConn.listRoutines();
-              const routine = dbClient === 'postgresql' ? routines[1] : routines[0];
+        describe('.listRoutines', () => {
+          it('should list all routines with their type', async() => {
+            const routines = await dbConn.listRoutines();
+            const routine = dbClient === 'postgresql' ? routines[1] : routines[0];
 
-              // Postgresql routine type is always function. SP do not exist
-              // Futhermore, PostgreSQL is expected to have two functions in schema, because
-              // additional one is needed for trigger
-              if (dbClient === 'postgresql') {
-                expect(routines).to.have.length(2);
-                expect(routine).to.have.deep.property('routineType').to.eql('FUNCTION');
-              } else {
-                expect(routines).to.have.length(1);
-                expect(routine).to.have.deep.property('routineType').to.eql('PROCEDURE');
-              }
-            });
+            // Postgresql routine type is always function. SP do not exist
+            // Futhermore, PostgreSQL is expected to have two functions in schema, because
+            // additional one is needed for trigger
+            if (dbClient === 'postgresql') {
+              expect(routines).to.have.length(2);
+              expect(routine).to.have.deep.property('routineType').to.eql('FUNCTION');
+            } else if (dbClient === 'mysql' || dbClient === 'sqlserver') {
+              expect(routines).to.have.length(1);
+              expect(routine).to.have.deep.property('routineType').to.eql('PROCEDURE');
+            } else if (dbClient === 'cassandra' || dbClient === 'sqlite') {
+              expect(routines).to.have.length(0);
+            } else {
+              throw new Error('Invalid db client');
+            }
           });
-        }
+        });
 
         describe('.listTableColumns', () => {
           it('should list all columns and their type from users table', async() => {
@@ -145,7 +155,11 @@ describe('db', () => {
             expect(column('role_id')).to.exist;
             expect(column('createdat')).to.exist;
 
-            expect(column('id')).to.have.property('dataType').to.have.string('int');
+            if (dbClient === 'sqlite') {
+              expect(column('id')).to.have.property('dataType').to.have.string('INTEGER');
+            } else {
+              expect(column('id')).to.have.property('dataType').to.have.string('int');
+            }
 
             // Each database may have different db types
             if (dbClient === 'postgresql') {
@@ -154,6 +168,12 @@ describe('db', () => {
               expect(column('password')).to.have.property('dataType').to.eql('text');
               expect(column('role_id')).to.have.property('dataType').to.eql('integer');
               expect(column('createdat')).to.have.property('dataType').to.eql('date');
+            } else if (dbClient === 'sqlite') {
+              expect(column('username')).to.have.property('dataType').to.eql('VARCHAR(45)');
+              expect(column('email')).to.have.property('dataType').to.eql('VARCHAR(150)');
+              expect(column('password')).to.have.property('dataType').to.eql('VARCHAR(45)');
+              expect(column('role_id')).to.have.property('dataType').to.eql('INT');
+              expect(column('createdat')).to.have.property('dataType').to.eql('DATETIME');
             } else if (dbClient === 'cassandra') {
               expect(column('username')).to.have.property('dataType').to.eql('text');
               expect(column('email')).to.have.property('dataType').to.eql('text');
@@ -187,6 +207,9 @@ describe('db', () => {
             const indexes = await dbConn.listTableIndexes('users', 'public');
             if (dbClient === 'cassandra') {
               expect(indexes).to.have.length(0);
+            } else if (dbClient === 'sqlite') {
+              expect(indexes).to.have.length(1);
+              expect(indexes).to.include.members(['users_id_index']);
             } else if (dbClient === 'postgresql') {
               expect(indexes).to.have.length(1);
               expect(indexes).to.include.members(['users_pkey']);
@@ -233,6 +256,8 @@ describe('db', () => {
             const tableKeys = await dbConn.getTableKeys('users');
             if (dbClient === 'cassandra') {
               expect(tableKeys).to.have.length(1);
+            } else if (dbClient === 'sqlite') {
+              expect(tableKeys).to.have.length(0);
             } else {
               expect(tableKeys).to.have.length(2);
             }
@@ -289,6 +314,17 @@ describe('db', () => {
                 ')\r\n');
               expect(createScript).to.contain('ALTER TABLE users ADD CONSTRAINT PK__users');
               expect(createScript).to.contain('PRIMARY KEY (id)');
+            } else if (dbClient === 'sqlite') {
+              expect(createScript).to.eql('CREATE TABLE users (\n' +
+                '  id INTEGER NOT NULL,\n' +
+                '  username VARCHAR(45) NULL,\n' +
+                '  email VARCHAR(150) NULL,\n' +
+                '  password VARCHAR(45) NULL,\n' +
+                '  role_id INT,\n' +
+                '  createdat DATETIME NULL,\n' +
+                '  PRIMARY KEY (id),\n' +
+                '  FOREIGN KEY (role_id) REFERENCES roles (id)\n)'
+              );
             } else if (dbClient === 'cassandra') {
               expect(createScript).to.eql(undefined);
             } else {
@@ -467,6 +503,12 @@ describe('db', () => {
                 'SELECT dbo.users.email, dbo.users.password',
                 'FROM dbo.users;\n',
               ].join('\n'));
+            } else if (dbClient === 'sqlite') {
+              expect(createScript).to.eql([
+                'CREATE VIEW email_view AS',
+                '  SELECT users.email, users.password',
+                '  FROM users',
+              ].join('\n'));
             } else if (dbClient === 'cassandra') {
               expect(createScript).to.eql(undefined);
             } else {
@@ -500,7 +542,7 @@ describe('db', () => {
               expect(createScript).to.contain('CREATE PROCEDURE dbo.users_count');
               expect(createScript).to.contain('@Count int OUTPUT');
               expect(createScript).to.contain('SELECT @Count = COUNT(*) FROM dbo.users');
-            } else if (dbClient === 'cassandra') {
+            } else if (dbClient === 'cassandra' || dbClient === 'sqlite') {
               expect(createScript).to.eql(undefined);
             } else {
               throw new Error('Invalid db client');
@@ -517,6 +559,7 @@ describe('db', () => {
                 postgresql: 'SELECT pg_sleep(10);',
                 mysql: 'SELECT SLEEP(10000);',
                 sqlserver: 'waitfor delay \'00:00:10\'; select 1 as number',
+                sqlite: 'sqlite3_sleep (10)',
               };
 
               const query = dbConn.query(sleepCommands[dbClient]);
@@ -546,7 +589,7 @@ describe('db', () => {
           });
         }
 
-        describe('.executeQuery', () => {
+        describe.only('.executeQuery', () => {
           const includePk = dbClient === 'cassandra';
 
           beforeEach(async () => {

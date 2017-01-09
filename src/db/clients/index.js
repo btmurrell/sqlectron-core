@@ -1,6 +1,7 @@
 import mysql from './mysql';
 import postgresql from './postgresql';
 import sqlserver from './sqlserver';
+import sqlite from './sqlite';
 import cassandra from './cassandra';
 
 
@@ -32,6 +33,11 @@ export const CLIENTS = [
     defaultPort: 1433,
   },
   {
+    key: 'sqlite',
+    name: 'SQLite',
+    defaultDatabase: ':memory:',
+  },
+  {
     key: 'cassandra',
     name: 'Cassandra',
     defaultPort: 9042,
@@ -53,5 +59,6 @@ export default {
   mysql,
   postgresql,
   sqlserver,
+  sqlite,
   cassandra,
 };
